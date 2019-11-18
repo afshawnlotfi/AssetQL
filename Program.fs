@@ -1,7 +1,7 @@
 open System
 open Amazon.S3
 open AssetData
-open AssetData.TestModels
+open AssetData.TestTypes
 [<EntryPoint>]
 let main argv =
     let bucketName = "test-bucket"
@@ -10,8 +10,9 @@ let main argv =
     
     // (client.PutBucketAsync bucketName).Wait()
 
-    // (Operations.uploadObject client bucketName {hash = "testHash"; query = "testQuery"}).Wait()
-    // printfn "%O" ((Operations.queryObjects client bucketName "testQuery").Result.[0] )
-    printfn "%O" ((Operations.getObject client bucketName (TableKey.Combined("testHash","testQuery"))).Result )
+    (Operations.put client bucketName {primary = "testHash"; query = "testQuery"}).Wait()
+    // printfn "%O" ((Operations.query client bucketName "testQuery").Result.[0] )
+    // printfn "%O" ((Operations.get client bucketName (TableKey.Combined("testHash","testQuery"))).Result )
+    printfn "%O" ((Operations.update<A> client bucketName (TableKey.Combined("testHash","testQuery")) (fun x -> {x with primary = "someOther"})).Result )
 
     0

@@ -45,11 +45,14 @@ module Models =
                                   keyName keyProperty.Value.Name))))
 
         match keyProperty with
-        | (Some property) -> property
-        | _ -> failwith (sprintf "No %s attribute was provided in object" keyName)
+        | (Some property) -> Some property
+        | _ -> None
 
 
-    let getPrimaryProperty objectType = getProperty objectType (typedefof<PrimaryKeyAttribute>).Name
+    let getPrimaryProperty objectType =
+        let property = getProperty objectType (typedefof<PrimaryKeyAttribute>).Name
+        if property.IsSome then property.Value
+        else failwith "PrimaryKey was not assigned"
 
     let getQueryProperty objectType = getProperty objectType (typedefof<QueryKeyAttribute>).Name
 
@@ -60,6 +63,16 @@ module Models =
         if value.GetType().FullName = "System.String" then value.ToString()
         else failwith (sprintf "Property must be of type 'System.String'")
 
+
+
+module TestTypes =
+    open Models
+    type A = {
+        [<PrimaryKey>]
+        primary : string
+        [<QueryKey>]
+        query : string
+    }
 
 module TableKey =
     open Models
@@ -72,16 +85,6 @@ module TableKey =
         { PrimaryKey = primary
           QueryKey = Some query }
 
-module TestModels =
-    open Models
-
-    type A =
-        { [<PrimaryKey>]
-          hash: string
-          [<QueryKey>]
-          query: string }
-
-
 module Operations =
     open Amazon.S3
     open FSharp.Control.Tasks.V2
@@ -91,44 +94,75 @@ module Operations =
     open Amazon.S3.Transfer
 
 
+    let keyFromType object =
+        let primaryKey = getPrimaryProperty (object.GetType()) |> getPropertyValue object
 
-    let internal queryObjects (client: IAmazonS3) bucketName queryName =
+        let queryKey =
+            let queryProperty = getQueryProperty (object.GetType())
+            if queryProperty.IsSome then
+                queryProperty.Value
+                |> getPropertyValue object
+                |> Some
+            else
+                None
+        { PrimaryKey = primaryKey
+          QueryKey = queryKey }
+
+
+    let internal pathFromTableKey tableKey =
+        if tableKey.QueryKey.IsSome then sprintf "%s/%s" tableKey.QueryKey.Value tableKey.PrimaryKey
+        else tableKey.PrimaryKey
+
+
+    let query (client: IAmazonS3) bucketName queryName =
         task {
             let! listed = client.ListObjectsAsync(bucketName, sprintf "/%s" queryName)
             return listed.S3Objects.ToArray() |> Array.map (fun object -> object.Key) }
 
-
-
-    let initalPath (object: obj) =
-        try
-            let queryPropertyValue = getQueryProperty (object.GetType()) |> getPropertyValue object
-            sprintf "%s/" queryPropertyValue
-        with _ -> ""
-
-    let internal getObject<'t> (client: IAmazonS3) bucketName (tableKey: TableKey) =
+    let get<'t> (client: IAmazonS3) bucketName (tableKey: TableKey) =
         task {
-            let initalPath =
-                if tableKey.QueryKey.IsSome then sprintf "%s/" tableKey.QueryKey.Value
-                else ""
-            let! getResponse = client.GetObjectAsync(bucketName, initalPath + tableKey.PrimaryKey)
+            let! getResponse = client.GetObjectAsync(bucketName, pathFromTableKey tableKey)
             use reader = new StreamReader(getResponse.ResponseStream)
             let body = reader.ReadToEnd()
             return JsonConvert.DeserializeObject<'t> body
         }
 
 
-    let internal uploadObject (client: IAmazonS3) bucketName (object: obj) =
+    let put (client: IAmazonS3) bucketName (object: obj) =
         task {
-            let primaryPropertyValue = (getPrimaryProperty (object.GetType())) |> getPropertyValue object
+            let primaryKey = (getPrimaryProperty (object.GetType())) |> getPropertyValue object
+            let queryProperty = (getQueryProperty (object.GetType()))
+
+            let queryKey =
+                if queryProperty.IsSome then
+                    queryProperty.Value
+                    |> getPropertyValue object
+                    |> Some
+                else
+                    None
+
             let byteArray = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject object)
             let stream = new MemoryStream(byteArray)
             use transferUtility = new TransferUtility(client)
-            do! transferUtility.UploadAsync(stream, bucketName, (initalPath object) + primaryPropertyValue)
+            do! transferUtility.UploadAsync
+                    (stream, bucketName,
+                     pathFromTableKey
+                         { PrimaryKey = primaryKey
+                           QueryKey = queryKey })
         }
 
 
+    let update<'t> (client: IAmazonS3) bucketName (tableKey: TableKey) (expr: 't -> 't) =
+        task {
+            let! oldObject = get<'t> client bucketName tableKey
+            let oldObjectKey = keyFromType oldObject
+            let newObject = (expr oldObject)
+            let newObjectKey = keyFromType newObject
 
+            if oldObjectKey <> newObjectKey then
+                let path = pathFromTableKey tableKey
+                let! _ = client.DeleteObjectAsync(bucketName, path)
+                ()
 
-    let Get = ()
-    let Write = ()
-    let Query = ()
+            do! put client bucketName newObject
+        }
