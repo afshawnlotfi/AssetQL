@@ -1,14 +1,17 @@
 ﻿namespace AssetData
 
 open Newtonsoft.Json
+open Amazon.S3.Model
+open System.Threading.Tasks
 
 
 module Models =
-
+    open Amazon.S3
     open System.Reflection
 
-    type TableModel =
-        { Name: string }
+    type AssetTable<'t> =
+        { BucketName: string
+          Client: IAmazonS3 }
 
     type QueryKeyAttribute() =
         inherit System.Attribute()
@@ -67,12 +70,12 @@ module Models =
 
 module TestTypes =
     open Models
-    type A = {
-        [<PrimaryKey>]
-        primary : string
-        [<QueryKey>]
-        query : string
-    }
+
+    type A =
+        { [<PrimaryKey>]
+          primary: string
+          [<QueryKey>]
+          query: string }
 
 module TableKey =
     open Models
@@ -114,21 +117,34 @@ module Operations =
         else tableKey.PrimaryKey
 
 
-    let query (client: IAmazonS3) bucketName queryName =
+    let query ({ Client = client; BucketName = bucketName }: AssetTable<'t>) queryKey =
         task {
-            let! listed = client.ListObjectsAsync(bucketName, sprintf "/%s" queryName)
-            return listed.S3Objects.ToArray() |> Array.map (fun object -> object.Key) }
 
-    let get<'t> (client: IAmazonS3) bucketName (tableKey: TableKey) =
+            let! listed = client.ListObjectsV2Async
+                              (ListObjectsV2Request(BucketName = bucketName, Prefix = sprintf "/%s" queryKey))
+
+            return listed.S3Objects.ToArray()
+                   |> Array.filter (fun object -> object.StorageClass = S3StorageClass.Standard)
+                   |> Array.map (fun object -> object.Key.Replace(sprintf "/%s/" queryKey, ""))
+        }
+
+    let get<'t> ({ Client = client; BucketName = bucketName }: AssetTable<'t>) (tableKey: TableKey) =
         task {
-            let! getResponse = client.GetObjectAsync(bucketName, pathFromTableKey tableKey)
+            let key = pathFromTableKey tableKey
+            let! getResponse = client.GetObjectAsync(bucketName, key)
             use reader = new StreamReader(getResponse.ResponseStream)
             let body = reader.ReadToEnd()
             return JsonConvert.DeserializeObject<'t> body
         }
 
 
-    let put (client: IAmazonS3) bucketName (object: obj) =
+    let batchGet<'t> (table: AssetTable<'t>) (tableKeys: TableKey []) =
+        let getTasks = tableKeys |> Array.map (fun tableKey -> get table tableKey)
+        getTasks |> Task.WhenAll
+
+
+    let put (table: AssetTable<'t>) (object: 't) (isQueryable: ('t -> bool) option) (assertItemDoesNotExist: bool) =
+        let { Client = client; BucketName = bucketName } = table
         task {
             let primaryKey = (getPrimaryProperty (object.GetType())) |> getPropertyValue object
             let queryProperty = (getQueryProperty (object.GetType()))
@@ -141,28 +157,67 @@ module Operations =
                 else
                     None
 
+            let tableKey =
+                { PrimaryKey = primaryKey
+                  QueryKey = queryKey }
+
+            if assertItemDoesNotExist then
+                try
+                    let! _ = get table tableKey
+                    failwith "Item exists when assertItemDoesNotExist paramter given"
+                with _ -> ()
+
+
             let byteArray = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject object)
             let stream = new MemoryStream(byteArray)
             use transferUtility = new TransferUtility(client)
-            do! transferUtility.UploadAsync
-                    (stream, bucketName,
-                     pathFromTableKey
-                         { PrimaryKey = primaryKey
-                           QueryKey = queryKey })
+            let key = pathFromTableKey tableKey
+            let request =
+                TransferUtilityUploadRequest
+                    (InputStream = stream, BucketName = bucketName,
+                     StorageClass =
+                         (if (isQueryable.IsSome && isQueryable.Value object) || isQueryable.IsNone then
+                             S3StorageClass.Standard
+                          else S3StorageClass.ReducedRedundancy), Key = key)
+            do! transferUtility.UploadAsync(request)
+            return tableKey
         }
 
 
-    let update<'t> (client: IAmazonS3) bucketName (tableKey: TableKey) (expr: 't -> 't) =
+    let delete (table: AssetTable<'t>) (tableKey: TableKey) (precondition: ('t -> bool) option) =
         task {
-            let! oldObject = get<'t> client bucketName tableKey
-            let oldObjectKey = keyFromType oldObject
-            let newObject = (expr oldObject)
-            let newObjectKey = keyFromType newObject
-
-            if oldObjectKey <> newObjectKey then
-                let path = pathFromTableKey tableKey
+            let { Client = client; BucketName = bucketName } = table
+            let path = pathFromTableKey tableKey
+            let! object = get table tableKey
+            if precondition.IsSome then
+                if precondition.Value object then
+                    let! _ = client.DeleteObjectAsync(bucketName, path)
+                    return object
+                else return failwith "precondition failed"
+            else
                 let! _ = client.DeleteObjectAsync(bucketName, path)
-                ()
+                return object
+        }
 
-            do! put client bucketName newObject
+
+
+    let update<'t> (table: AssetTable<'t>) (tableKey: TableKey) (expr: 't -> 't) (precondition: ('t -> bool) option)
+        (isQueryable: ('t -> bool) option) =
+        task {
+            let { Client = client; BucketName = bucketName } = table
+            let! oldObject = get<'t> table tableKey
+            if (precondition.IsSome && precondition.Value oldObject) then
+
+                let oldObjectKey = keyFromType oldObject
+                let newObject = (expr oldObject)
+                let newObjectKey = keyFromType newObject
+
+                if oldObjectKey <> newObjectKey then 
+                    let! _ = delete table tableKey None; 
+                    ();
+
+                let! _ = put table newObject isQueryable false
+                return newObject
+            else
+                return failwith "precondition failed"
         }

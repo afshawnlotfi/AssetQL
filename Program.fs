@@ -10,9 +10,9 @@ let main argv =
     
     // (client.PutBucketAsync bucketName).Wait()
 
-    (Operations.put client bucketName {primary = "testHash"; query = "testQuery"}).Wait()
-    // printfn "%O" ((Operations.query client bucketName "testQuery").Result.[0] )
+    (Operations.put {Client = client; BucketName = bucketName} {primary = "testHash"; query = "testQuery"} (Some (fun x -> true)) false).Wait()
+    printfn "%O" ((Operations.query {Client = client; BucketName = bucketName} "testQuery").Result.[0] )
     // printfn "%O" ((Operations.get client bucketName (TableKey.Combined("testHash","testQuery"))).Result )
-    printfn "%O" ((Operations.update<A> client bucketName (TableKey.Combined("testHash","testQuery")) (fun x -> {x with primary = "someOther"})).Result )
+    // printfn "%O" ((Operations.update<A> client bucketName (TableKey.Combined("testHash","testQuery")) (fun x -> {x with primary = "someOther"})).Result )
 
     0
