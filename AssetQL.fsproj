@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- <OutputType>Exe</OutputType> -->
+    <OutputType>Exe</OutputType>
     <TargetFramework>netcoreapp2.2</TargetFramework>
   </PropertyGroup>
 
@@ -11,7 +11,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Newtonsoft.Json" Version="12.0.3" />
+    <PackageReference Include="Newtonsoft.Json" Version="12.0.2" />
     <PackageReference Include="TaskBuilder.fs" Version="2.1.0" />
     <PackageReference Include="AWSSDK.S3" Version="3.3.106.6" />
   </ItemGroup>
