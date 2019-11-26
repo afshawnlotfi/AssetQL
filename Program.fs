@@ -10,7 +10,7 @@ let main argv =
     
     // (client.PutBucketAsync bucketName).Wait()
 
-    (Operations.put {Client = client; Name = bucketName} {primary = "+14044916825   he)-920203729pfi2"; query = "testQuery"} (Some (fun x -> true)) false).Wait()
+    (Operations.put {Client = client; Name = bucketName} {primary = "+14044916825"; query = "testQuery"; ttl = 1574780244L} (Some (fun x -> true)) false).Wait()
     // printfn "%O" ((Operations.query {Client = client; Name = bucketName} "testQuery").Result.[0] )
     // printfn "%O" ((Operations.get client bucketName (TableKey.Combined("testHash","testQuery"))).Result )
     // printfn "%O" ((Operations.update<A> client bucketName (TableKey.Combined("testHash","testQuery")) (fun x -> {x with primary = "someOther"})).Result )

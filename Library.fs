@@ -10,6 +10,7 @@ module Models =
     open Amazon.S3
     open System.Reflection
 
+
     type AssetTable<'t> =
         { Name: string
           Client: IAmazonS3 }
@@ -17,7 +18,7 @@ module Models =
     type QueryKeyAttribute() =
         inherit System.Attribute()
 
-    type TTLKeyAttribute() =
+    type TTLAttribute() =
         inherit System.Attribute()
 
 
@@ -41,7 +42,7 @@ module Models =
 
     let decode (src: string) =
         let base64EncodedBytes =
-            System.Convert.FromBase64String(src.Replace("-", "+").Replace("_", "/").Replace("=", "!"))
+            System.Convert.FromBase64String(src.Replace("-", "+").Replace("_", "/").Replace("!", "="))
         System.Text.Encoding.UTF8.GetString(base64EncodedBytes)
 
     let getProperty (objectType: System.Type) keyName =
@@ -72,7 +73,7 @@ module Models =
 
     let getQueryProperty objectType = getProperty objectType (typedefof<QueryKeyAttribute>).Name
 
-    let getTTLProperty objectType = getProperty objectType (typedefof<TTLKeyAttribute>).Name
+    let getTTLProperty objectType = getProperty objectType (typedefof<TTLAttribute>).Name
 
     let getPropertyValue object (property: PropertyInfo) =
         let value = property.GetValue object
@@ -92,7 +93,11 @@ module TestTypes =
         { [<PrimaryKey>]
           primary: string
           [<QueryKey>]
-          query: string }
+          query: string 
+          [<TTL>]
+          ttl: int64 
+        
+        }
 
 module TableKey =
     open Models
@@ -111,6 +116,8 @@ module Operations =
     open System.IO
     open Models
     open Amazon.S3.Transfer
+
+    let mutable ttlCheckEnabled = true 
 
 
     let keyFromType object =
@@ -150,7 +157,7 @@ module Operations =
 
         if ttlProperty.IsSome then
             let ttl = ttlProperty.Value |> getTTLValue object
-            ttl > System.DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+            ttlCheckEnabled && ttl < System.DateTimeOffset.UtcNow.ToUnixTimeSeconds()
         else
             failwith "TTL property does not exist"
 
@@ -237,7 +244,6 @@ module Operations =
                     isExpired object // if expired item is there but needs to be overwritten so there is no point in checking if item exists for assertion in next block; Expired = itemDoesNotExist
                 with _ -> false
 
-
             if assertItemDoesNotExist && (not inferItemDoesNotExist) then
 
                 let! exists = task {
@@ -247,7 +253,7 @@ module Operations =
                                   with _ -> return false
                               }
 
-                if exists then failwith "Item exists when assertItemDoesNotExist paramter given"
+                if exists then failwith "Item exists when assertItemDoesNotExist parameter given"
 
 
 
