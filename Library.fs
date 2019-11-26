@@ -144,11 +144,11 @@ module Operations =
         task {
             let encodedQueryKey = encode queryKey
             let! listed = client.ListObjectsV2Async
-                              (ListObjectsV2Request(BucketName = tableName, Prefix = sprintf "/%s" encodedQueryKey))
+                              (ListObjectsV2Request(BucketName = tableName, Prefix = sprintf "%s" encodedQueryKey))
 
             return listed.S3Objects.ToArray()
                    |> Array.filter (fun object -> object.StorageClass = S3StorageClass.Standard)
-                   |> Array.map (fun object -> decode (object.Key.Replace(sprintf "/%s/" encodedQueryKey, "")))
+                   |> Array.map (fun object -> decode (object.Key.Replace(sprintf "%s/" encodedQueryKey, "")))
         }
 
 
