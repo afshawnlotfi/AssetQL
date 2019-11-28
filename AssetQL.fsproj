@@ -1,13 +1,14 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- <OutputType>Exe</OutputType> -->
+    <OutputType>Exe</OutputType>
     <TargetFramework>netcoreapp2.2</TargetFramework>
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="AssetQL.Utils/AssetQL.Utils.csproj" />
     <Compile Include="Library.fs" />
-    <!-- <Compile Include="Program.fs" /> -->
+    <Compile Include="Program.fs" />
   </ItemGroup>
 
   <ItemGroup>

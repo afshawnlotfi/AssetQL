@@ -3,17 +3,30 @@
 open Newtonsoft.Json
 open Amazon.S3.Model
 open System.Threading.Tasks
+open System.IO
+open AssetQL
 open System.Text
-
 
 module Models =
     open Amazon.S3
     open System.Reflection
 
 
+    type CompressionType =
+        | GZip
+        | NoCompression
+
+    type EncryptionType =
+        | AES256 of Cryptography.CryptoKey
+        | NoEncryption
+
+
+
     type AssetTable<'t> =
         { Name: string
-          Client: IAmazonS3 }
+          Client: IAmazonS3
+          Encryption: EncryptionType
+          Compression: CompressionType }
 
     type QueryKeyAttribute() =
         inherit System.Attribute()
@@ -85,7 +98,6 @@ module Models =
         if value.GetType().FullName = "System.Int64" then value :?> int64
         else failwith (sprintf "TTL must be of type 'System.Int64'")
 
-
 module TestTypes =
     open Models
 
@@ -93,11 +105,8 @@ module TestTypes =
         { [<PrimaryKey>]
           primary: string
           [<QueryKey>]
-          query: string 
-          [<TTL>]
-          ttl: int64 
-        
-        }
+          query: string
+          content: string }
 
 module TableKey =
     open Models
@@ -117,7 +126,7 @@ module Operations =
     open Models
     open Amazon.S3.Transfer
 
-    let mutable ttlCheckEnabled = true 
+    let mutable ttlCheckEnabled = true
 
 
     let keyFromType object =
@@ -140,6 +149,7 @@ module Operations =
         else (encode tableKey.PrimaryKey)
 
 
+
     let query ({ Client = client; Name = tableName }: AssetTable<'t>) queryKey =
         task {
             let encodedQueryKey = encode queryKey
@@ -152,6 +162,9 @@ module Operations =
         }
 
 
+
+
+
     let isExpired object =
         let ttlProperty = getTTLProperty (object.GetType())
 
@@ -162,14 +175,30 @@ module Operations =
             failwith "TTL property does not exist"
 
 
-    let internal getWithoutException ({ Client = client; Name = tableName }: AssetTable<'t>) (tableKey: TableKey) =
+    let internal getWithoutException ({ Client = client; Name = tableName; Compression = compression;
+                                        Encryption = encryption }: AssetTable<'t>) (tableKey: TableKey) =
         task {
             try
                 let path = pathFromTableKey tableKey
                 let! getResponse = client.GetObjectAsync(tableName, path)
-                use reader = new StreamReader(getResponse.ResponseStream)
-                let body = reader.ReadToEnd()
-                let object = JsonConvert.DeserializeObject<'t> body
+                use stream = new MemoryStream()
+                getResponse.ResponseStream.CopyTo(stream)
+
+
+
+                let decrypted =
+                    match encryption with
+                    | AES256 encodedCryptoKey -> Cryptography.Aes.Decrypt(stream.ToArray(), encodedCryptoKey)
+                    | NoEncryption -> stream.ToArray()
+
+                let uncompressed =
+                    match compression with
+                    | GZip -> Compression.GZip.Unzip(decrypted)
+                    | NoCompression -> decrypted
+
+
+
+                let object = JsonConvert.DeserializeObject<'t> (Encoding.UTF8.GetString uncompressed)
 
                 try
                     if isExpired object then
@@ -202,15 +231,25 @@ module Operations =
         }
 
 
-    let upload ({ Client = client; Name = tableName }: AssetTable<'t>) (tableKey: TableKey) (stream: Stream)
-        (storageClass: S3StorageClass option) =
+    let upload ({ Client = client; Name = tableName; Compression = compression; Encryption = encryption }: AssetTable<'t>)
+        (tableKey: TableKey) (byteArray: byte []) (storageClass: S3StorageClass option) =
         task {
             use transferUtility = new TransferUtility(client)
             let key = pathFromTableKey tableKey
 
+            // use stream = new MemoryStream(byteArray)
+
+            let compressed = Compression.GZip.Zip(byteArray)
+
+            let encrypted =
+                match encryption with
+                | AES256 encodedCryptoKey -> Cryptography.Aes.Encrypt(compressed, encodedCryptoKey)
+                | NoEncryption -> compressed
+
+
             let request =
                 TransferUtilityUploadRequest
-                    (InputStream = stream, BucketName = tableName, Key = key,
+                    (InputStream = new MemoryStream(encrypted), BucketName = tableName, Key = key,
                      StorageClass =
                          if storageClass.IsSome then storageClass.Value
                          else S3StorageClass.Standard)
@@ -256,14 +295,14 @@ module Operations =
                 if exists then failwith "Item exists when assertItemDoesNotExist parameter given"
 
 
-
             let byteArray = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject object)
+            let stream = new MemoryStream(byteArray)
 
             let storageClass =
                 (if (isQueryable.IsSome && isQueryable.Value object) || isQueryable.IsNone then S3StorageClass.Standard
                  else S3StorageClass.ReducedRedundancy)
 
-            return! upload table tableKey (new MemoryStream(byteArray)) (Some storageClass)
+            return! upload table tableKey byteArray (Some storageClass)
         }
 
 
