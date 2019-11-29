@@ -6,6 +6,7 @@ open System.Threading.Tasks
 open System.IO
 open AssetQL
 open System.Text
+open System.Text.RegularExpressions
 
 module Models =
     open Amazon.S3
@@ -24,6 +25,7 @@ module Models =
 
     type AssetTable<'t> =
         { Name: string
+          Version: string
           Client: IAmazonS3
           Encryption: EncryptionType
           Compression: CompressionType }
@@ -49,13 +51,15 @@ module Models =
 
 
 
-    let encode (src: string) =
+    let encode (src: string) (version : string) =
         let plainTextBytes = System.Text.Encoding.UTF8.GetBytes(src)
-        System.Convert.ToBase64String(plainTextBytes).Replace("+", "-").Replace("/", "_").Replace("=", "!")
+        sprintf "VERSION_%s_%s" version (System.Convert.ToBase64String(plainTextBytes).Replace("+", "-").Replace("/", "_").Replace("=", "!"))
 
     let decode (src: string) =
+        let m = Regex.Match(src, "VERSION_(..*)_(..*)")
+        let base64 = m.Groups.[2].Value
         let base64EncodedBytes =
-            System.Convert.FromBase64String(src.Replace("-", "+").Replace("_", "/").Replace("!", "="))
+            System.Convert.FromBase64String(base64.Replace("-", "+").Replace("_", "/").Replace("!", "="))
         System.Text.Encoding.UTF8.GetString(base64EncodedBytes)
 
     let getProperty (objectType: System.Type) keyName =
@@ -122,7 +126,6 @@ module TableKey =
 module Operations =
     open Amazon.S3
     open FSharp.Control.Tasks.V2
-    open System.IO
     open Models
     open Amazon.S3.Transfer
 
@@ -144,15 +147,15 @@ module Operations =
           QueryKey = queryKey }
 
 
-    let internal pathFromTableKey tableKey =
-        if tableKey.QueryKey.IsSome then sprintf "%s/%s" (encode tableKey.QueryKey.Value) (encode tableKey.PrimaryKey)
-        else (encode tableKey.PrimaryKey)
+    let internal pathFromTableKey tableKey version =
+        if tableKey.QueryKey.IsSome then sprintf "%s/%s" (encode tableKey.QueryKey.Value version) (encode tableKey.PrimaryKey version)
+        else (encode tableKey.PrimaryKey version)
 
 
 
-    let query ({ Client = client; Name = tableName }: AssetTable<'t>) queryKey =
+    let query ({ Client = client; Name = tableName; Version = version }: AssetTable<'t>) queryKey =
         task {
-            let encodedQueryKey = encode queryKey
+            let encodedQueryKey = encode queryKey version
             let! listed = client.ListObjectsV2Async
                               (ListObjectsV2Request(BucketName = tableName, Prefix = sprintf "%s" encodedQueryKey))
 
@@ -176,10 +179,10 @@ module Operations =
 
 
     let internal getWithoutException ({ Client = client; Name = tableName; Compression = compression;
-                                        Encryption = encryption }: AssetTable<'t>) (tableKey: TableKey) =
+                                        Encryption = encryption; Version = version }: AssetTable<'t>) (tableKey: TableKey) =
         task {
             try
-                let path = pathFromTableKey tableKey
+                let path = pathFromTableKey tableKey version
                 let! getResponse = client.GetObjectAsync(tableName, path)
                 use stream = new MemoryStream()
                 getResponse.ResponseStream.CopyTo(stream)
@@ -231,15 +234,17 @@ module Operations =
         }
 
 
-    let upload ({ Client = client; Name = tableName; Compression = compression; Encryption = encryption }: AssetTable<'t>)
+    let upload ({ Client = client; Name = tableName; Compression = compression; Encryption = encryption; Version = version }: AssetTable<'t>)
         (tableKey: TableKey) (byteArray: byte []) (storageClass: S3StorageClass option) =
         task {
             use transferUtility = new TransferUtility(client)
-            let key = pathFromTableKey tableKey
+            let key = pathFromTableKey tableKey version
 
-            // use stream = new MemoryStream(byteArray)
 
-            let compressed = Compression.GZip.Zip(byteArray)
+            let compressed =
+                match compression with
+                | GZip -> Compression.GZip.Zip(byteArray)
+                | NoCompression -> byteArray
 
             let encrypted =
                 match encryption with
@@ -308,8 +313,8 @@ module Operations =
 
     let delete (table: AssetTable<'t>) (tableKey: TableKey) (precondition: ('t -> bool) option) =
         task {
-            let { Client = client; Name = tableName } = table
-            let path = pathFromTableKey tableKey
+            let { Client = client; Name = tableName; Version = version } = table
+            let path = pathFromTableKey tableKey version
             let! object = get table tableKey
             if precondition.IsSome then
                 if precondition.Value object then
@@ -345,17 +350,17 @@ module Operations =
 
 
 
-    let getAccessUrl ({ Client = client; Name = tableName }: AssetTable<'t>) (tableKey: TableKey) duration =
+    let getAccessUrl ({ Client = client; Name = tableName; Version = version }: AssetTable<'t>) (tableKey: TableKey) duration =
         let request =
             GetPreSignedUrlRequest
-                (BucketName = tableName, Key = pathFromTableKey tableKey, Verb = HttpVerb.GET, Protocol = Protocol.HTTP,
+                (BucketName = tableName, Key = (pathFromTableKey tableKey version), Verb = HttpVerb.GET, Protocol = Protocol.HTTP,
                  Expires = duration)
         client.GetPreSignedURL(request)
 
 
-    let postAccessUrl ({ Client = client; Name = tableName }: AssetTable<'t>) (tableKey: TableKey) duration contentType =
+    let postAccessUrl ({ Client = client; Name = tableName; Version = version }: AssetTable<'t>) (tableKey: TableKey) duration contentType =
         let request =
             GetPreSignedUrlRequest
-                (BucketName = tableName, Key = pathFromTableKey tableKey, Expires = duration, Verb = HttpVerb.PUT,
+                (BucketName = tableName, Key = pathFromTableKey tableKey version, Expires = duration, Verb = HttpVerb.PUT,
                  Protocol = Protocol.HTTP, ContentType = contentType)
         client.GetPreSignedURL(request)
