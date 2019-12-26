@@ -1,9 +1,9 @@
 open System
 open Amazon.S3
-open AssetData
-open AssetData.TestTypes
+open AssetQL
+open AssetQL.TestTypes
 open AssetQL.Cryptography
-open AssetData.Models
+open AssetQL.Models
 [<EntryPoint>]
 let main argv =
 

@@ -1,4 +1,4 @@
-﻿namespace AssetData
+﻿namespace AssetQL
 
 open Newtonsoft.Json
 open Amazon.S3.Model
